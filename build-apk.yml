@@ -1,0 +1,46 @@
+name: build patched app.apk with esp
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+          local-cache: true
+
+      - name: ndk-build
+        working-directory: test
+        run: |
+          ndk-build NDK_PROJECT_PATH=app/src/main NDK_APPLICATION_MK=app/src/main/jni/Application.mk APP_BUILD_SCRIPT=app/src/main/jni/Android.mk
+
+      - name: repack apk with new lib
+        run: |
+          set -e
+          SO="$GITHUB_WORKSPACE/test/app/src/main/libs/arm64-v8a/libTGdearstudioV2.so"
+          test -f "$SO"
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          echo "build-tools: $BT"
+          rm -rf /tmp/apk && mkdir /tmp/apk
+          cd /tmp/apk && unzip -q "$GITHUB_WORKSPACE/test/app/build/bin/app.apk"
+          rm -rf /tmp/apk/META-INF
+          mkdir -p /tmp/apk/lib/arm64-v8a
+          cp "$SO" /tmp/apk/lib/arm64-v8a/libcharmdev.so
+          cd /tmp/apk && zip -q -r -X /tmp/unsigned.apk .
+          "$BT/zipalign" -f -p 4 /tmp/unsigned.apk /tmp/aligned.apk
+          keytool -genkeypair -keystore /tmp/debug.jks -storepass android -keypass android \
+            -alias debug -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=debug"
+          "$BT/apksigner" sign --ks /tmp/debug.jks --ks-pass pass:android --key-pass pass:android \
+            --ks-key-alias debug --out "$GITHUB_WORKSPACE/app-esp.apk" /tmp/aligned.apk
+          "$BT/apksigner" verify "$GITHUB_WORKSPACE/app-esp.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-esp
+          path: app-esp.apk
